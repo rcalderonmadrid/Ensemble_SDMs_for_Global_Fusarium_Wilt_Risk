@@ -1,0 +1,14 @@
+devtools
+dplyr
+terra
+ape
+sf
+ggplot2
+parallel
+e1071
+automap
+foreach
+doFuture
+future
+github:sjevelazco/flexsdm
+github:biomodhub/biomod2
