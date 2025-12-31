@@ -17,12 +17,6 @@
 #'
 #' For GitHub packages, only the repository name (basename) is used when
 #' loading with library(), as this is the installed package name.
-#'
-#' @examples
-#' \dontrun{
-#' load_packages()
-#' load_packages("R/requirements.txt")
-#' }
 
 load_packages <- function(file = "requirements.txt") {
   if (!file.exists(file)) {
@@ -56,11 +50,6 @@ load_packages <- function(file = "requirements.txt") {
 #' @param dirs Character vector of subdirectory names to create within base
 #' @return Invisibly returns a character vector of full paths to all created
 #'   (or existing) directories
-#' @examples
-#' \dontrun{
-#' # Create output directories
-#' dirs <- create_dirs("outputs", c("models", "plots", "tables"))
-#' }
 
 create_dirs <- function(base, dirs) {
   if (!dir.exists(base)) {
@@ -104,7 +93,6 @@ create_dirs <- function(base, dirs) {
 #' 4. Recodes predictions for use as a constraint mask:
 #'    - SVM class 0 (unsuitable) → 1 (suitable for sampling)
 #'    - SVM class 1 (suitable) → NA (exclude from sampling)
-#'
 
 env_const <- function(occ, env_layer, cores = 1) {
   # Extract environmental values at occurrence points
@@ -172,18 +160,6 @@ env_const <- function(occ, env_layer, cores = 1) {
 #' correlated variables contributes less and should be removed. The variable
 #' whose removal causes the smallest decrease (or largest increase) in
 #' performance is considered less important.
-#'
-#' @examples
-#' \dontrun{
-#' jk <- JK_test(
-#'   data = biomod_data,
-#'   models_trained = c("RF", "GBM"),
-#'   metric = "TSS",
-#'   variables = c("bio1", "bio12"),
-#'   partitions = cv_partitions
-#' )
-#' print(jk$results)
-#' }
 
 JK_test <- function(data,
                     models_trained,
@@ -298,20 +274,6 @@ JK_test <- function(data,
 #'
 #' The function prioritizes keeping high-importance variables when choosing
 #' which correlated variable to remove.
-#'
-#' @examples
-#' \dontrun{
-#' result <- RemoveCorrVar(
-#'   model = initial_models,
-#'   data = biomod_data,
-#'   partitions = cv_partitions,
-#'   metric = "TSS",
-#'   bg_sample = background_env,
-#'   cor_th = 0.7,
-#'   models_trained = c("RF", "GBM", "MAXNET")
-#' )
-#' cat("Removed variables:", paste(result$vars, collapse = ", "))
-#' }
 
 RemoveCorrVar <- function(model,
                           data,
@@ -457,17 +419,6 @@ RemoveCorrVar <- function(model,
 #'
 #' The median range is typically used as the minimum block size for spatial
 #' cross-validation to ensure training and test sets are spatially independent.
-#'
-#' @examples
-#' \dontrun{
-#' autocor <- spatial_autocor(
-#'   env_stack = env_layers,
-#'   num_sample = 500000,
-#'   seed = 200,
-#'   cores = 8
-#' )
-#' cat("Autocorrelation range:", autocor$range_km, "km\n")
-#' }
 
 spatial_autocor <- function(env_stack,
                             num_sample = 5000L,
