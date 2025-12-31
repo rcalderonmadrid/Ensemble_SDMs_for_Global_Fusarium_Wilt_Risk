@@ -14,7 +14,7 @@
 #
 # Requirements:
 #   - Internet connection (for downloading packages)
-#   - R version 3.5 or higher recommended
+#   - R version 4.0 or higher recommended
 #   - Write permissions to R library directory
 #
 # What happens:
@@ -28,7 +28,8 @@
 #   - Check your internet connection
 #   - Ensure you have appropriate permissions
 #   - Try installing failed packages manually: install.packages("package_name")
-#   - For GitHub packages, ensure devtools is working: devtools::session_info()
+#   - For GitHub packages, ensure devtools is working:
+#     devtools::session_info()
 #
 # ==============================================================================
 
@@ -36,4 +37,14 @@
 source("R/install_requirements.R")
 
 # Install all required packages from requirements.txt
-install_requirements()
+cat("Starting package installation...\n")
+failed <- install_requirements()
+
+# Report results
+if (length(failed) > 0) {
+  cat("\n\u26A0 Some packages failed to install.\n")
+  cat("Please review errors above and install manually if needed.\n")
+} else {
+  cat("\n\u2714 Setup complete! All packages installed successfully.\n")
+  cat("You can now run the analysis scripts.\n")
+}

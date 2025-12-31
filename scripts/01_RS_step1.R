@@ -465,7 +465,8 @@ scores <- get_evaluations(model_out) %>%
         mean = ~ mean(.x, na.rm = TRUE),
         sd = ~ sd(.x, na.rm = TRUE)
       )
-    )
+    ),
+    .groups = "drop"
   )
 
 # ==============================================================================
@@ -478,7 +479,7 @@ bg_sample <- parallel::mclapply(
     set.seed(200 + x)
     sample <- terra::spatSample(
       env_stack,
-      100000,
+      size = 100000,
       method = "random",
       na.rm = TRUE,
       as.raster = FALSE,
@@ -508,10 +509,10 @@ rcv <- RemoveCorrVar(
   bg_sample = bg_sample,
   method = "spearman",
   cor_th = 0.7,
-  models.trained = all_models,
+  models_trained = all_models,
   permut = 5,
-  nb.cpu = 15,
-  seed.val = 150
+  nb_cpu = 15,
+  seed_val = 150
 )
 
 # Save final variable set and data
