@@ -306,7 +306,7 @@ RemoveCorrVar <- function(model,
       for (j in seq_along(unique(var_imp$PA))) {
         for (k in seq_along(unique(var_imp$run))) {
           for (l in seq_along(unique(var_imp$rand))) {
-            m <- var_imp %>%
+            m <- var_imp |>
               dplyr::filter(
                 .data$algo == unique(var_imp$algo)[i],
                 .data$PA == unique(var_imp$PA)[j],
@@ -322,14 +322,14 @@ RemoveCorrVar <- function(model,
     }
     
     # Summarize importance (median) and sort by descending importance
-    scores <- vimp %>%
-      dplyr::group_by(.data$expl.var) %>%
+    scores <- vimp |>
+      dplyr::group_by(.data$expl.var) |>
       dplyr::summarize(
         Permutation_importance = stats::median(.data$var.imp),
         sd = stats::sd(.data$var.imp),
         .groups = "drop"
-      ) %>%
-      dplyr::rename(Variable = "expl.var") %>%
+      ) |>
+      dplyr::rename(Variable = "expl.var") |>
       dplyr::arrange(dplyr::desc(.data$Permutation_importance))
     
     vars <- scores$Variable
@@ -440,8 +440,8 @@ spatial_autocor <- function(env_stack,
   }, mc.cores = cores)
   
   # Combine batches and remove duplicate locations
-  points <- points %>%
-    dplyr::bind_rows() %>%
+  points <- points |>
+    dplyr::bind_rows() |>
     dplyr::distinct(.data$x, .data$y, .keep_all = TRUE)
   
   points <- terra::vect(
@@ -477,5 +477,345 @@ spatial_autocor <- function(env_stack,
     range_degree = the_range_degree,
     range_km = the_range,
     range_table = vario_data
+  ))
+}
+
+#' Environmental Filtering of Occurrence Records
+#'
+#' Filters occurrence records to reduce environmental clustering by retaining
+#' only one occurrence per environmental grid cell. Environmental space is
+#' divided into bins, and duplicate records within the same bin are removed.
+#' This is an edited version of flexsdm::occfilt_env with parallel processing.
+#'
+#' @param data Data frame with occurrence records
+#' @param x Character. Name of longitude column
+#' @param y Character. Name of latitude column
+#' @param id Character. Name of unique identifier column
+#' @param env_layer SpatRaster of environmental predictor variables
+#' @param nbins Integer. Number of bins to divide environmental range into.
+#'   Higher values create finer environmental resolution
+#' @param cores Integer. Number of CPU cores for parallel processing
+#' @return Tibble with environmentally filtered occurrences
+#' @details
+#' The function:
+#' 1. Removes categorical (factor) variables from environmental layers
+#' 2. Extracts environmental values at occurrence locations
+#' 3. Removes records with missing environmental data
+#' 4. Divides each environmental variable's range into nbins
+#' 5. Classifies each environmental layer into bins
+#' 6. Creates unique environmental signature for each location
+#' 7. Retains only first occurrence per unique environmental signature
+
+occfilt_env_edited <- function(data,
+                              x,
+                              y,
+                              id,
+                              env_layer,
+                              nbins,
+                              cores = 1) {
+
+  # Check for required packages
+  if (!requireNamespace("terra", quietly = TRUE)) {
+    stop("Package 'terra' is required but not installed.", call. = FALSE)
+  }
+  
+  # Extract coordinates and ID
+  data_subset <- data[, c(x, y, id)]
+  coords <- data[, c(x, y)]
+  
+  # Remove factor (categorical) variables
+  is_factor <- terra::is.factor(env_layer)
+  names(is_factor) <- names(env_layer)
+  
+  if (sum(is_factor) > 0) {
+    env_layer <- env_layer[[!is_factor]]
+    message(
+      "Removed categorical variables: ",
+      paste(names(is_factor)[is_factor], collapse = ", ")
+    )
+  }
+  rm(is_factor)
+  
+  # Extract environmental values at occurrence locations
+  message("Extracting environmental values from raster layers...")
+  env_backup <- env_layer
+  env_values <- terra::extract(env_layer, coords, ID = FALSE)
+  
+  # Remove records with missing environmental data
+  complete_cases <- stats::complete.cases(env_values)
+  if (sum(!complete_cases) > 0) {
+    message(
+      sum(!complete_cases),
+      " records removed due to missing environmental data"
+    )
+    data_subset <- data_subset[complete_cases, ]
+    coords <- coords[complete_cases, ]
+    env_values <- env_values[complete_cases, ]
+  }
+  rm(complete_cases)
+  
+  # Calculate bin width for each environmental variable
+  n_vars <- ncol(env_values)
+  bin_widths <- apply(env_values, 2, function(x) diff(range(x))) / nbins
+  
+  # Create classification breaks for each variable
+  class_breaks <- vector("list", length = n_vars)
+  for (i in seq_len(n_vars)) {
+    var_range <- range(env_values[, i])
+    # Expand range slightly to ensure all values are included
+    var_range[1] <- var_range[1] - 0.000001
+    var_range[2] <- var_range[2] + 0.05 + 0.000001
+    
+    class_breaks[[i]] <- seq(var_range[1], var_range[2], by = bin_widths[i])
+    class_breaks[[i]][length(class_breaks[[i]])] <- var_range[2]
+  }
+  
+  # Classify each environmental layer into bins (parallel processing)
+  message("Classifying environmental layers into bins...")
+  env_layer <- parallel::mclapply(seq_len(terra::nlyr(env_backup)), function(i) {
+    layer_classified <- terra::classify(
+      env_backup[[i]],
+      class_breaks[[i]],
+      include.lowest = TRUE,
+      wopt = list(memmax = 30, steps = 200)
+    )
+    
+    # Set factor levels to match bin values
+    lvs <- terra::levels(layer_classified)[[1]]
+    lvs[[2]] <- lvs[[1]]
+    terra::levels(layer_classified) <- lvs
+    
+    return(layer_classified)
+  }, mc.cores = cores)
+  
+  # Stack classified layers
+  env_layer <- terra::rast(env_layer)
+  
+  # Extract classified values and create unique environmental signatures
+  classified_values <- terra::extract(env_layer, coords)[-1]
+  classified_values$groupID <- apply(
+    classified_values,
+    1,
+    function(x) paste(x, collapse = ".")
+  )
+  
+  message("Number of records before filtering: ", nrow(data_subset))
+  
+  # Filter occurrences: keep one per unique environmental signature
+  # Handle NAs separately to ensure they're not removed
+  if (any(is.na(classified_values$groupID))) {
+    na_records <- data_subset[is.na(classified_values$groupID), c(id, x, y)]
+    unique_records <- data_subset[
+      !duplicated(classified_values$groupID) & !is.na(classified_values$groupID),
+      c(id, x, y)
+    ]
+    filtered_coords <- unique(dplyr::bind_rows(unique_records, na_records))
+  } else {
+    filtered_coords <- data_subset[
+      !duplicated(classified_values$groupID),
+      c(id, x, y)
+    ]
+  }
+  
+  message("Number of records after filtering: ", nrow(filtered_coords))
+  
+  return(dplyr::tibble(filtered_coords))
+}
+
+#' Optimize Variables Based on Contribution Threshold
+#'
+#' Iteratively removes low-contribution predictor variables from species
+#' distribution models. Variables with contribution below a threshold are
+#' tested using jackknife analysis. If removing a variable maintains or
+#' improves validation performance, it is permanently removed. This process
+#' continues until no more variables can be removed without degrading
+#' performance.
+#'
+#' @param model BIOMOD.models.out object from initial model training
+#' @param data BIOMOD.formated.data object with species and environmental data
+#' @param partitions Matrix of cross-validation partitions
+#' @param metric Evaluation metric ("ROC" or "TSS")
+#' @param th Numeric. Contribution threshold in percentage. Variables with
+#'   contribution <= th are candidates for removal. Default is 2.
+#' @param models_trained Character vector of model algorithm names
+#' @param permut Number of permutations for variable importance. Default is 2.
+#' @param nb_cpu Number of CPU cores for parallel processing. Default is 1.
+#' @param seed_val Random seed for reproducibility. Default is NULL.
+#' @return List with three elements:
+#'   - vars: Character vector of removed variable names
+#'   - models_var_optimized: Final BIOMOD model object
+#'   - data_var_optimized: Final BIOMOD data object with optimized variables
+#' @details
+#' The algorithm:
+#' 1. Calculates normalized variable importance (as percentages)
+#' 2. Identifies variables with median importance <= threshold
+#' 3. For each low-importance variable (starting with lowest):
+#'    a. Trains models without that variable using jackknife test
+#'    b. Checks if validation performance is maintained/improved
+#'    c. If yes, removes variable permanently; if no, keeps it
+#' 4. Repeats until no more variables meet removal criteria
+#'
+#' Variable importance is normalized within each model run to ensure fair
+#' comparison across different algorithms and pseudo-absence replicates.
+#'
+#' The function tracks both training and validation metrics but uses
+#' validation performance as the decision criterion for variable removal.
+
+OptimizeVar <- function(model,
+                        data,
+                        partitions,
+                        metric,
+                        th = 2,
+                        models_trained,
+                        permut = 2,
+                        nb_cpu = 1,
+                        seed_val = NULL) {
+  
+  # Store initial variable set
+  initial_vars <- model@expl.var.names
+  removed_vars <- character(0)
+  variables_reduced <- FALSE
+  
+  # Get initial model performance
+  model_scores <- biomod2::get_evaluations(model, metric.eval = metric) %>%
+    dplyr::group_by(.data$metric.eval) %>%
+    dplyr::summarise(
+      dplyr::across(
+        .data$sensitivity:.data$validation,
+        ~ mean(.x, na.rm = TRUE)
+      ),
+      .groups = "drop"
+    )
+  
+  # Track performance metrics over iterations
+  train_metric <- data.frame(iteration = 0, value = model_scores[[1, 4]])
+  val_metric <- data.frame(iteration = 0, value = model_scores[[1, 5]])
+  
+  # Iteratively test and remove low-importance variables
+  while (!variables_reduced) {
+    continue_removal <- FALSE
+    
+    # Get variable importance and normalize to percentages
+    var_imp <- biomod2::get_variables_importance(model)
+    vimp <- data.frame()
+    
+    # Normalize importance within each model run
+    for (i in seq_along(unique(var_imp$algo))) {
+      for (j in seq_along(unique(var_imp$PA))) {
+        for (k in seq_along(unique(var_imp$run))) {
+          for (l in seq_along(unique(var_imp$rand))) {
+            m <- var_imp |>
+              dplyr::filter(
+                .data$algo == unique(var_imp$algo)[i],
+                .data$PA == unique(var_imp$PA)[j],
+                .data$run == unique(var_imp$run)[k],
+                .data$rand == unique(var_imp$rand)[l]
+              )
+            
+            # Normalize to percentages
+            sum_imp <- sum(m$var.imp)
+            m$var.imp <- 100 * m$var.imp / sum_imp
+            vimp <- dplyr::bind_rows(vimp, m)
+          }
+        }
+      }
+    }
+    
+    # Summarize importance and identify low-contribution variables
+    scores <- vimp |>
+      dplyr::group_by(.data$expl.var) |>
+      dplyr::summarize(
+        Permutation_importance = stats::median(.data$var.imp),
+        sd = stats::sd(.data$var.imp),
+        .groups = "drop"
+      ) |>
+      dplyr::rename(Variable = "expl.var") |>
+      dplyr::arrange(.data$Permutation_importance)
+    
+    # Filter variables below threshold
+    low_contrib_vars <- scores[scores$Permutation_importance <= th, ]
+    
+    # Test removal of low-contribution variables
+    if (nrow(low_contrib_vars) > 0) {
+      for (i in seq_len(nrow(low_contrib_vars))) {
+        var_to_test <- as.character(low_contrib_vars$Variable[i])
+        
+        # Jackknife test: train models without this variable
+        jk <- JK_test(
+          data = data,
+          models_trained = models_trained,
+          metric = metric,
+          variables = var_to_test,
+          partitions = partitions,
+          permut = permut,
+          nb_cpu = nb_cpu,
+          seed_val = seed_val
+        )
+        
+        # Track iteration
+        current_iteration <- nrow(train_metric)
+        
+        # Check if validation performance is maintained or improved
+        current_val_metric <- val_metric$value[1]
+        new_val_metric <- jk$results[[1, 3]]
+        
+        if (new_val_metric >= current_val_metric) {
+          # Remove variable permanently
+          model <- jk$models_without[[1]]
+          data <- jk$data_without[[1]]
+          removed_vars <- c(removed_vars, var_to_test)
+          continue_removal <- TRUE
+          
+          # Update performance tracking
+          train_metric <- dplyr::bind_rows(
+            train_metric,
+            data.frame(
+              iteration = current_iteration,
+              value = jk$results[[1, 2]]
+            )
+          )
+          val_metric <- dplyr::bind_rows(
+            val_metric,
+            data.frame(
+              iteration = current_iteration,
+              value = new_val_metric
+            )
+          )
+          
+          message(
+            "Removed variable '",
+            var_to_test,
+            "' (validation ",
+            metric,
+            ": ",
+            round(new_val_metric, 3),
+            ")"
+          )
+          break
+        }
+      }
+      
+      # Continue if variable was removed, otherwise stop
+      if (continue_removal) {
+        next
+      } else {
+        variables_reduced <- TRUE
+      }
+    } else {
+      # No variables below threshold
+      variables_reduced <- TRUE
+    }
+  }
+  
+  message(
+    "\nVariable optimization complete. Removed ",
+    length(setdiff(removed_vars, initial_vars)),
+    " variables."
+  )
+  
+  return(list(
+    vars = setdiff(removed_vars, initial_vars),
+    models_var_optimized = model,
+    data_var_optimized = data
   ))
 }
