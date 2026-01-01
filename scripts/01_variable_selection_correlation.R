@@ -1,5 +1,5 @@
 # ==============================================================================
-# Step 1: Remote Sensing Data Modeling - Initial Variable Selection
+# Step 1: Correlation-Based Variable Selection
 # ==============================================================================
 #
 # Purpose:

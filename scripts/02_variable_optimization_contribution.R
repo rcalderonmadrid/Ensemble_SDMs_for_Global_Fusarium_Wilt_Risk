@@ -1,34 +1,29 @@
 # ==============================================================================
-# Step 3: Remote Sensing Data Modeling - Model Tuning and Ensemble
+# Step 2: Contribution-Based Variable Optimization
 # ==============================================================================
 #
 # Purpose:
-#   Performs final model calibration and ensemble modeling building on Step 2:
-#   - Loads Step 2 optimized remote sensing variables
+#   Performs variable optimization workflow building on Step 1 outputs:
+#   - Loads Step 1 uncorrelated remote sensing variables
 #   - Applies spatial and environmental filtering to occurrences
 #   - Pseudo-absence generation with environmental and geographic constraints
-#   - Hyperparameter tuning for all algorithms
-#   - Ensemble modeling with multiple strategies
-#   - Spatial projections of individual and ensemble models
+#   - Initial model calibration with multiple algorithms
+#   - Optimizes variable set by removing low-contribution predictors
 #
 # Requirements:
 #   - Run 00_setup.R first to install required packages
-#   - Run 02_RS_step2.R to obtain optimized variables
+#   - Run 01_RS_step1.R to obtain uncorrelated variables
 #   - Environmental raster layers in RS_variables/ directory
-#   - Sufficient computational resources (20+ cores recommended)
+#   - Sufficient computational resources (10+ cores recommended)
 #
 # Outputs:
 #   - filtered_occ.csv: Spatially and environmentally filtered occurrences
 #   - spatial_autocorrelation.rds: Spatial autocorrelation metrics
 #   - block_partition.tif: Spatial blocks for cross-validation
-#   - psa_*.csv: Pseudo-absence datasets (11 replicates, 10 for training + 1 for evaluation)
-#   - FoxyBiomodData.rds: Formatted biomod2 input object with eval data
-#   - tuned_*.rds: Tuned hyperparameters for each algorithm
-#   - Tuned.ModelOut.rds: Final calibrated models with tuned parameters
-#   - Ensemble_model.rds: Ensemble models
-#   - model_scores.csv: Individual model evaluation metrics
-#   - EM_scores.csv: Ensemble model evaluation metrics
-#   - Single_models_proj.rds: Spatial projections of individual models
+#   - psa_*.csv: Pseudo-absence datasets (10 replicates)
+#   - FoxyBiomodData.rds: Formatted biomod2 input object
+#   - Model_initial.rds: Initial calibrated models
+#   - vars_optimized.csv: Optimized variable set after filtering
 #
 # ==============================================================================
 
@@ -59,29 +54,27 @@ terra::terraOptions(
 # Define paths to existing directories containing input data
 env_dir <- "Data/RS_variables"      # Environmental predictor layers
 occ_dir <- "Data/occurrences"       # Species occurrence data
-step2_dir <- "Data/Step 2"          # Step 2 outputs (optimized variables)
+step1_dir <- "Data/Step 1"          # Step 1 outputs (uncorrelated variables)
 
-# Create main directory structure for Step 3
+# Create main directory structure for Steps 2
 main_dirs <- create_dirs(
   base = "Data",
-  dirs = "Step 3"
+  dirs = "Step 2"
 )
 
 # Assign main directories to variables for easy reference
-step3_dir <- main_dirs[1]           # Current step outputs
+step2_dir <- main_dirs[1]           # Current step outputs
 
-# Create Step 3 subdirectories for organized output storage
-step3_subdirs <- create_dirs(
-  base = step3_dir,
+# Create Step 2 subdirectories for organized output storage
+step2_subdirs <- create_dirs(
+  base = step2_dir,
   dirs = c(
-    "Pseudoabsences",               # Pseudo-absence data storage
-    "Tuning"                        # Hyperparameter tuning results
+    "Pseudoabsences"               # Pseudo-absence data storage
   )
 )
 
 # Assign subdirectories to variables
-psa_dir <- step3_subdirs[1]         # Pseudo-absence directory
-tuning_dir <- step3_subdirs[2]      # Tuning directory
+psa_dir <- step2_subdirs[1]         # Pseudo-absence directory
 
 # ------------------------------------------------------------------------------
 # 1.2 Load Environmental Variables
@@ -95,13 +88,13 @@ files_paths <- list.files(
 )
 env_stack <- terra::rast(files_paths)
 
-# Subset to variables that passed optimization in Step 2
-# This uses the final optimized variable set
-vars_optimized <- read.csv(
-  paste0(step2_dir, "/vars_optimized.csv")
+# Subset to variables that passed correlation filtering in Step 1
+# This reduces multicollinearity among predictors
+vars_corr_removed <- read.csv(
+  paste0(step1_dir, "/vars_corr_removed.csv")
 )[, 1]
-env_stack_subset <- terra::subset(env_stack, vars_optimized)
-rm(env_stack)                       # Remove full stack to free memory
+env_stack_subset <- terra::subset(env_stack, vars_corr_removed)
+rm(env_stack)                    # Remove full stack to free memory
 
 # ------------------------------------------------------------------------------
 # 1.3 Load and Clean Occurrence Data
@@ -285,10 +278,10 @@ occ$pr_ab <- 1
 var <- spatial_autocor(
   env_stack = env_stack_subset,
   num_sample = 500000,              # Sample 500k points for analysis
-  seed = 550,                       # Different seed from Step 2
+  seed = 200,
   cores = 25
 )
-saveRDS(var, paste0(step3_dir, "/spatial_autocorrelation.rds"))
+saveRDS(var, paste0(step2_dir, "/spatial_autocorrelation.rds"))
 
 # Extract autocorrelation range for block size determination
 min_block_size_degree <- var$range_degree
@@ -332,7 +325,7 @@ block_layer <- terra::resample(
 names(block_layer) <- ".part"
 terra::writeRaster(
   block_layer,
-  paste0(step3_dir, "/block_partition.tif"),
+  paste0(step2_dir, "/block_partition.tif"),
   overwrite = TRUE
 )
 
@@ -353,7 +346,7 @@ occ_blocks <- terra::extract(
 occ$.part <- occ_blocks$.part
 write.csv(
   occ,
-  paste0(step3_dir, "/filtered_occ.csv"),
+  paste0(step2_dir, "/filtered_occ.csv"),
   row.names = FALSE
 )
 
@@ -384,9 +377,7 @@ terra::writeRaster(envc_layer, paste0(psa_dir, "/envc_layer.tif"))
 # ------------------------------------------------------------------------------
 # 4.4 Generate Pseudo-Absence Replicates
 # ------------------------------------------------------------------------------
-# Generate 11 replicate sets of pseudo-absences using parallel processing
-# 10 replicates for training (cross-validation)
-# 1 additional replicate for independent evaluation
+# Generate 10 replicate sets of pseudo-absences using parallel processing
 # Each replicate uses different random sampling while maintaining:
 # - Geographic constraints (minimum distance from presences)
 # - Environmental constraints (environmentally unsuitable areas)
@@ -396,7 +387,7 @@ future::plan(multisession, workers = 2, gc = TRUE)
 options(future.globals.maxSize = 25000 * 1024^2)  # 25 GB max object size
 
 psa_rep <- foreach(
-  i = seq_len(11),                  # 11 pseudo-absence replicates
+  i = seq_len(10),                  # 10 pseudo-absence replicates
   .options.future = list(seed = TRUE)
 ) %dofuture% {
   gc()                              # Garbage collection to free memory
@@ -408,10 +399,10 @@ psa_rep <- foreach(
     full.names = TRUE
   )
   env_stack <- terra::rast(files_paths)
-  vars_optimized <- read.csv(
-    paste0(step2_dir, "/vars_optimized.csv")
+  vars_corr_removed <- read.csv(
+    paste0(step1_dir, "/vars_corr_removed.csv")
   )[, 1]
-  env_stack <- terra::subset(env_stack, vars_optimized)
+  env_stack <- terra::subset(env_stack, vars_corr_removed)
   
   # Define calibration area (4000 km buffer around occurrences)
   occ_vect <- terra::vect(
@@ -424,7 +415,7 @@ psa_rep <- foreach(
   rm(occ_vect)
   
   # Load and crop block layer to calibration area
-  block_layer <- terra::rast(paste0(step3_dir, "/block_partition.tif"))
+  block_layer <- terra::rast(paste0(step2_dir, "/block_partition.tif"))
   rlayer <- block_layer |>
     terra::crop(ca) |>
     terra::mask(ca)
@@ -449,13 +440,7 @@ psa_rep <- foreach(
   # Apply geographic constraint (100 km exclusion radius)
   exclusion_radius <- 100 * 1000    # Convert to meters
   geoc_layer <- geo_const(occ, rlayer, exclusion_radius)
-  
-  # Load environmental constraint layer (use from Step 2 if available)
-  if (file.exists(envc_layer_path)) {
-    envc_layer <- terra::rast(envc_layer_path)
-  } else {
-    envc_layer <- terra::rast(paste0(psa_dir, "/envc_layer.tif"))
-  }
+  envc_layer <- terra::rast(paste0(psa_dir, "/envc_layer.tif"))
   
   # Ensure geographic and environmental constraint layers have same extent
   # Crop to common extent if they differ
@@ -519,7 +504,7 @@ future::plan(sequential)            # Return to sequential processing
 psa_rep <- psa_rep |> dplyr::bind_rows()
 
 # ==============================================================================
-# PART 5: BIOMOD2 DATA FORMATTING WITH EVALUATION SET
+# PART 5: BIOMOD2 DATA FORMATTING
 # ==============================================================================
 
 # ------------------------------------------------------------------------------
@@ -530,17 +515,14 @@ resp_name <- "Foxy"                 # Species/response variable name
 # Calculate dimensions
 pres <- nrow(occ)                   # Number of presence records
 psa <- nrow(occ)                    # Number of pseudo-absences per replicate
-psan <- 10                          # Number of pseudo-absence replicates for training
+psan <- 10                          # Number of pseudo-absence replicates
 
 # ------------------------------------------------------------------------------
-# 5.2 Create Pseudo-Absence Table (Training Set)
+# 5.2 Create Pseudo-Absence Table
 # ------------------------------------------------------------------------------
 # Construct pseudo-absence table for biomod2
 # Each column represents one replicate, indicating which pseudo-absences
 # belong to that replicate (TRUE/FALSE)
-# Using only first 10 replicates for training
-psa_train <- psa_rep |> dplyr::filter(rep <= 10)
-
 psa_table <- data.frame(
   cbind(
     matrix(1, psa * psan, 2),       # Initialize coordinate columns
@@ -554,7 +536,7 @@ colnames(psa_table) <- c("x", "y", paste("RUN", seq_len(psan), sep = ""))
 start <- 1
 for (k in seq_len(psan)) {
   # Assign coordinates for this replicate
-  psa_table[seq(start, psa * k), 1:2] <- psa_train[
+  psa_table[seq(start, psa * k), 1:2] <- psa_rep[
     seq(start, psa * k),
     c("x", "y")
   ]
@@ -568,20 +550,20 @@ psa_table$x <- as.numeric(as.character(psa_table$x))
 psa_table$y <- as.numeric(as.character(psa_table$y))
 
 # ------------------------------------------------------------------------------
-# 5.3 Create Response Variable Vector (Training Set)
+# 5.3 Create Response Variable Vector
 # ------------------------------------------------------------------------------
 # Response variable: 1 for presences, NA for pseudo-absences
 # biomod2 will populate NAs with 0s based on PA.user.table
 resp_var <- as.numeric(c(rep(1, pres), rep(NA, psa * psan)))
 
 # ------------------------------------------------------------------------------
-# 5.4 Combine Coordinates (Training Set)
+# 5.4 Combine Coordinates
 # ------------------------------------------------------------------------------
 # Combine presence and pseudo-absence coordinates
 resp_xy <- data.frame(rbind(occ[, c("x", "y")], psa_table[, c("x", "y")]))
 
 # ------------------------------------------------------------------------------
-# 5.5 Create Presence-Absence Table (Training Set)
+# 5.5 Create Presence-Absence Table
 # ------------------------------------------------------------------------------
 # Create presence table (all presences belong to all replicates)
 pres_table <- data.frame(
@@ -596,41 +578,22 @@ pa_table <- rbind(pres_table[, -c(1, 2)], psa_table[, -c(1, 2)])
 pa_table[] <- lapply(pa_table, as.logical)  # Convert to logical
 
 # ------------------------------------------------------------------------------
-# 5.6 Create Independent Evaluation Set
+# 5.6 Format Data for BIOMOD2
 # ------------------------------------------------------------------------------
-# Use 11th pseudo-absence replicate for independent model evaluation
-# This provides an unbiased assessment of model performance
-psa_eval <- psa_rep |> dplyr::filter(rep == 11)
-
-# Evaluation response: 1 for presences, 0 for pseudo-absences
-eval_resp_var <- as.numeric(c(rep(1, pres), rep(0, pres)))
-
-# Evaluation coordinates: combine presences with 11th replicate pseudo-absences
-eval_resp_xy <- data.frame(rbind(
-  occ[, c("x", "y")],
-  psa_eval[, c("x", "y")]
-))
-
-# ------------------------------------------------------------------------------
-# 5.7 Format Data for BIOMOD2 with Evaluation Set
-# ------------------------------------------------------------------------------
-# Create biomod2 input object with all necessary data including evaluation set
+# Create biomod2 input object with all necessary data
 foxy_biomod_data <- BIOMOD_FormatingData(
-  resp.var = resp_var,              # Training response variable
-  dir.name = step3_dir,             # Output directory
+  resp.var = resp_var,              # Response variable
+  dir.name = step2_dir,             # Output directory
   expl.var = env_stack_subset,      # Environmental predictors
-  resp.xy = resp_xy,                # Training coordinates
+  resp.xy = resp_xy,                # Coordinates
   resp.name = resp_name,            # Species name
-  eval.resp.var = eval_resp_var,    # Evaluation response variable
-  eval.expl.var = env_stack_subset, # Evaluation environmental data
-  eval.resp.xy = eval_resp_xy,      # Evaluation coordinates
   PA.strategy = "user.defined",     # User-defined pseudo-absences
   PA.user.table = pa_table,         # PA assignment table
   na.rm = TRUE                      # Remove NAs from predictors
 )
 
 # Save biomod2 data object for future use
-saveRDS(foxy_biomod_data, file = paste0(step3_dir, "/FoxyBiomodData.rds"))
+saveRDS(foxy_biomod_data, file = paste0(step2_dir, "/FoxyBiomodData.rds"))
 
 # ==============================================================================
 # PART 6: SPATIAL CROSS-VALIDATION SETUP
@@ -655,8 +618,8 @@ for (i in seq_len(psan)) {          # Loop through pseudo-absence replicates
     
     # Pseudo-absence partition: exclude block j for testing in replicate i
     psa_part <- matrix("TRUE", psa * psan, 1)
-    psa_part[which(psa_train$rep == i & psa_train$.part == j), 1] <- FALSE
-    psa_part[which(psa_train$rep != i), 1] <- NA  # NA for other replicates
+    psa_part[which(psa_rep$rep == i & psa_rep$.part == j), 1] <- FALSE
+    psa_part[which(psa_rep$rep != i), 1] <- NA  # NA for other replicates
     
     # Combine presence and pseudo-absence partitions
     part <- c(occ_part, psa_part)
@@ -672,7 +635,7 @@ partitions[] <- lapply(partitions, as.logical)
 partitions <- as.matrix(partitions)
 
 # ==============================================================================
-# PART 7: HYPERPARAMETER TUNING
+# PART 7: MODEL CALIBRATION AND VARIABLE OPTIMIZATION
 # ==============================================================================
 
 # ------------------------------------------------------------------------------
@@ -690,9 +653,10 @@ all_models <- c(
 )
 
 # ------------------------------------------------------------------------------
-# 7.2 Set Default Modeling Options (Bigboss Strategy)
+# 7.2 Set Modeling Options
 # ------------------------------------------------------------------------------
-# Configure default modeling parameters as baseline for tuning
+# Configure modeling parameters using "bigboss" strategy
+# This uses recommended default parameters for each algorithm
 opt_b <- bm_ModelingOptions(
   data.type = "binary",             # Presence/pseudo-absence data
   models = all_models,
@@ -702,363 +666,88 @@ opt_b <- bm_ModelingOptions(
 )
 
 # ------------------------------------------------------------------------------
-# 7.3 Tune Individual Algorithms
+# 7.3 Run Initial Model Calibration
 # ------------------------------------------------------------------------------
-# Perform hyperparameter tuning for each algorithm
-# Using grid search with cross-validation to find optimal parameters
-# Evaluation metric: TSS (True Skill Statistic)
-
-# Tune Artificial Neural Networks (ANN)
-message("Tuning ANN...")
-tuned_ann <- bm_Tuning(
-  model = "ANN",
-  tuning.fun = "avNNet",            # Averaging neural networks
-  do.formula = FALSE,
-  bm.options = opt_b@options$ANN.binary.nnet.nnet,
-  bm.format = foxy_biomod_data,
-  calib.lines = partitions,
-  metric.eval = "TSS",
-  params.train = list(
-    ANN.size = seq(2, 35, 2),       # Number of hidden units
-    ANN.decay = c(0.01, 0.05, 0.1, 0.2, 0.3)  # Weight decay
-  )
-)
-saveRDS(tuned_ann, paste0(tuning_dir, "/tuned_ann.rds"))
-
-# Tune Generalized Additive Models (GAM)
-message("Tuning GAM...")
-tuned_gam <- bm_Tuning(
-  model = "GAM",
-  tuning.fun = "gam",
-  do.formula = FALSE,
-  bm.options = opt_b@options$GAM.binary.mgcv.gam,
-  bm.format = foxy_biomod_data,
-  calib.lines = partitions,
-  metric.eval = "TSS",
-  params.train = list(
-    GAM.select = c(TRUE, FALSE),    # Automatic term selection
-    GAM.method = c("GCV.Cp", "GACV.Cp", "REML", "P-REML", "ML", "P-ML")
-  )
-)
-saveRDS(tuned_gam, paste0(tuning_dir, "/tuned_gam.rds"))
-
-# Tune Generalized Boosted Models (GBM)
-message("Tuning GBM...")
-tuned_gbm <- bm_Tuning(
-  model = "GBM",
-  tuning.fun = "gbm",
-  do.formula = FALSE,
-  bm.options = opt_b@options$GBM.binary.gbm.gbm,
-  bm.format = foxy_biomod_data,
-  calib.lines = partitions,
-  metric.eval = "TSS",
-  params.train = list(
-    GBM.n.trees = c(500, 1000, 2500),  # Number of trees
-    GBM.interaction.depth = seq(2, 10, by = 2),  # Tree depth
-    GBM.shrinkage = c(0.001, 0.01, 0.1),  # Learning rate
-    GBM.n.minobsinnode = 10         # Minimum observations in terminal nodes
-  )
-)
-saveRDS(tuned_gbm, paste0(tuning_dir, "/tuned_gbm.rds"))
-
-# Tune Multivariate Adaptive Regression Splines (MARS)
-message("Tuning MARS...")
-tuned_mars <- bm_Tuning(
-  model = "MARS",
-  tuning.fun = "earth",
-  do.formula = FALSE,
-  bm.options = opt_b@options$MARS.binary.earth.earth,
-  bm.format = foxy_biomod_data,
-  calib.lines = partitions,
-  metric.eval = "TSS",
-  params.train = list(
-    MARS.degree = 1:2,              # Degree of interactions
-    MARS.nprune = 2:max(38, 2 * ncol(foxy_biomod_data@data.env.var) + 1)
-  )
-)
-saveRDS(tuned_mars, paste0(tuning_dir, "/tuned_mars.rds"))
-
-# Tune Random Forest (RF)
-message("Tuning RF...")
-tuned_rf <- bm_Tuning(
-  model = "RF",
-  tuning.fun = "rf",
-  do.formula = FALSE,
-  bm.options = opt_b@options$RF.binary.randomForest.randomForest,
-  bm.format = foxy_biomod_data,
-  calib.lines = partitions,
-  metric.eval = "TSS",
-  params.train = list(
-    RF.mtry = seq_len(min(10, ncol(foxy_biomod_data@data.env.var)))
-  )
-)
-saveRDS(tuned_rf, paste0(tuning_dir, "/tuned_rf.rds"))
-
-# ------------------------------------------------------------------------------
-# 7.4 Load Tuned Parameters
-# ------------------------------------------------------------------------------
-# Load all tuned hyperparameters
-tuned_ann <- readRDS(paste0(tuning_dir, "/tuned_ann.rds"))
-tuned_gam <- readRDS(paste0(tuning_dir, "/tuned_gam.rds"))
-tuned_gbm <- readRDS(paste0(tuning_dir, "/tuned_gbm.rds"))
-tuned_mars <- readRDS(paste0(tuning_dir, "/tuned_mars.rds"))
-tuned_rf <- readRDS(paste0(tuning_dir, "/tuned_rf.rds"))
-
-# Compile tuned parameters into user-defined options
-user_val <- list(
-  ANN.binary.nnet.nnet = tuned_ann,
-  GAM.binary.mgcv.gam = tuned_gam,
-  GBM.binary.gbm.gbm = tuned_gbm,
-  MARS.binary.earth.earth = tuned_mars,
-  RF.binary.randomForest.randomForest = tuned_rf
-)
-
-# ------------------------------------------------------------------------------
-# 7.5 Set Modeling Options with Tuned Parameters
-# ------------------------------------------------------------------------------
-# Configure modeling with tuned hyperparameters
-my_opt <- bm_ModelingOptions(
-  data.type = "binary",             # Presence/pseudo-absence data
-  models = all_models,
-  strategy = "user.defined",        # Use custom tuned parameters
-  user.val = user_val,              # Tuned hyperparameters
-  user.base = "bigboss",            # Base on bigboss defaults
-  bm.format = foxy_biomod_data,
-  calib.lines = partitions
-)
-
-# ==============================================================================
-# PART 8: MODEL CALIBRATION WITH TUNED PARAMETERS
-# ==============================================================================
-
-# ------------------------------------------------------------------------------
-# 8.1 Run Final Model Calibration
-# ------------------------------------------------------------------------------
-# Calibrate models using tuned hyperparameters and all algorithms
+# Calibrate models using all variables and all algorithms
 # Cross-validation uses spatial blocks to ensure independence
-tuned_model_out <- BIOMOD_Modeling(
-  bm.format = foxy_biomod_data,
-  modeling.id = "Tuned_models",     # Model run identifier
+model_out <- BIOMOD_Modeling(
+  foxy_biomod_data,
+  modeling.id = "initial",          # Model run identifier
   models = all_models,              # Algorithms to use
+  OPT.user = opt_b,                 # Modeling options
   CV.strategy = "user.defined",     # Use custom cross-validation
   CV.user.table = partitions,       # Spatial block partitions
   CV.do.full.models = FALSE,        # Only run cross-validation models
-  OPT.user = my_opt,                # Tuned modeling options
-  metric.eval = c("ROC", "TSS", "FAR", "BIAS", "POD", "POFD", "SR", "BOYCE"),
+  metric.eval = c("TSS", "ROC"),    # Evaluation metrics
   var.import = 10,                  # Number of permutations for var importance
   scale.models = FALSE,             # Don't scale predictions
-  nb.cpu = 20,                      # Number of CPU cores to use
-  seed.val = 550,                   # Random seed for reproducibility
+  nb.cpu = 15,                      # Number of CPU cores to use
+  seed.val = 250,                   # Random seed for reproducibility
   do.progress = TRUE                # Show progress bar
 )
 
-# Save tuned model outputs
-saveRDS(tuned_model_out, paste0(step3_dir, "/Tuned.ModelOut.rds"))
+# Save initial model outputs
+saveRDS(model_out, paste0(step2_dir, "/Model_initial.rds"))
 
 # ------------------------------------------------------------------------------
-# 8.2 Extract and Save Model Evaluation Metrics
+# 7.4 Variable Optimization
 # ------------------------------------------------------------------------------
-# Get detailed evaluation scores for all models
-model_scores <- get_evaluations(
-  tuned_model_out,
-  metric.eval = c("ROC", "TSS", "FAR", "BIAS", "POD", "POFD", "SR", "BOYCE")
+# Optimize variable set by iteratively removing low-contribution variables
+# This process:
+# 1. Calculates variable importance for each algorithm
+# 2. Removes variables with low importance (below threshold)
+# 3. Re-evaluates model performance
+# 4. Repeats until all remaining variables are important
+
+varopt <- OptimizeVar(
+  model = model_out,                # Initial models
+  data = foxy_biomod_data,          # Biomod data object
+  partitions = partitions,          # Cross-validation partitions
+  metric = "TSS",                   # Metric to optimize (True Skill Statistic)
+  th = 2,                           # Importance threshold (%)
+  models.trained = c("ANN", "GBM", "MAXNET", "RF", "GAM", "MARS"),
+  permut = 10,                      # Permutations for variable importance
+  nb.cpu = 15,                      # Number of CPU cores
+  seed.val = 100                    # Random seed for reproducibility
 )
+
+# ------------------------------------------------------------------------------
+# 7.5 Save Optimized Variables
+# ------------------------------------------------------------------------------
+# Export final set of optimized variables for use in subsequent steps
 write.csv(
-  model_scores,
-  paste0(step3_dir, "/model_scores.csv"),
+  varopt$models_var_optimized@expl.var.names,
+  paste0(step2_dir, "/vars_optimized.csv"),
   row.names = FALSE
 )
 
-# Calculate summary statistics for model evaluation metrics
-# Group by algorithm and metric, compute mean and standard deviation
-summary_model_scores <- get_evaluations(tuned_model_out) |>
-  dplyr::group_by(algo, metric.eval) |>
-  dplyr::summarise(
-    dplyr::across(
-      sensitivity:evaluation,
-      list(
-        mean = ~ mean(.x, na.rm = TRUE),
-        sd = ~ sd(.x, na.rm = TRUE)
-      )
-    ),
-    .groups = "drop"
+# ------------------------------------------------------------------------------
+# 7.6 Print Summary
+# ------------------------------------------------------------------------------
+cat("\n=== Step 2 Complete ===\n")
+cat(
+  "Initial number of variables (from Step 1):",
+  length(vars_corr_removed),
+  "\n"
+)
+cat(
+  "Final number of optimized variables:",
+  length(varopt$models_var_optimized@expl.var.names),
+  "\n"
+)
+cat(
+  "Variables removed during optimization:",
+  length(vars_corr_removed) - length(varopt$models_var_optimized@expl.var.names),
+  "\n"
+)
+if (length(vars_corr_removed) > length(varopt$models_var_optimized@expl.var.names)) {
+  removed_vars <- setdiff(
+    vars_corr_removed,
+    varopt$models_var_optimized@expl.var.names
   )
-
-write.csv(
-  summary_model_scores,
-  paste0(step3_dir, "/summary_model_scores.csv"),
-  row.names = FALSE
-)
-
-# ------------------------------------------------------------------------------
-# 8.3 Extract and Save Variable Importance
-# ------------------------------------------------------------------------------
-# Get variable importance scores from all models
-var_imp <- get_variables_importance(tuned_model_out)
-write.csv(
-  var_imp,
-  paste0(step3_dir, "/var_imp.csv"),
-  row.names = FALSE
-)
-
-# Normalize variable importance to percentages
-# This ensures fair comparison across models and replicates
-vimp <- data.frame()
-
-for (i in seq_along(unique(var_imp$algo))) {
-  for (j in seq_along(unique(var_imp$PA))) {
-    for (k in seq_along(unique(var_imp$run))) {
-      for (l in seq_along(unique(var_imp$rand))) {
-        m <- var_imp |>
-          dplyr::filter(
-            algo == unique(var_imp$algo)[i],
-            PA == unique(var_imp$PA)[j],
-            run == unique(var_imp$run)[k],
-            rand == unique(var_imp$rand)[l]
-          )
-        
-        # Normalize to percentages
-        sum_imp <- sum(m$var.imp)
-        m$var.imp <- 100 * m$var.imp / sum_imp
-        vimp <- dplyr::bind_rows(vimp, m)
-      }
-    }
-  }
+  cat("Removed variables:", paste(removed_vars, collapse = ", "), "\n")
 }
 
-# Summarize normalized variable importance
-summary_vimp_scores <- vimp |>
-  dplyr::group_by(expl.var) |>
-  dplyr::summarize(
-    Permutation_importance = stats::median(var.imp),
-    sd = stats::sd(var.imp),
-    .groups = "drop"
-  ) |>
-  dplyr::rename(Variable = expl.var) |>
-  dplyr::arrange(dplyr::desc(Permutation_importance))
-
-write.csv(
-  summary_vimp_scores,
-  paste0(step3_dir, "/summary_models_var_imp.csv"),
-  row.names = FALSE
-)
-
 # ==============================================================================
-# PART 9: ENSEMBLE MODELING
+# END OF STEP 2
 # ==============================================================================
-
-# ------------------------------------------------------------------------------
-# 9.1 Build Ensemble Models
-# ------------------------------------------------------------------------------
-# Create ensemble models using multiple strategies
-# Filters models based on validation TSS >= 0.8
-# Multiple ensemble algorithms provide robust predictions
-biomod_em <- BIOMOD_EnsembleModeling(
-  bm.mod = tuned_model_out,
-  models.chosen = "all",            # Use all individual models
-  em.by = "all",                    # Single ensemble across all models
-  em.algo = c(
-    "EMmean",     # Mean of predictions
-    "EMcv",       # Coefficient of variation weighted mean
-    "EMci",       # Confidence interval
-    "EMmedian",   # Median of predictions
-    "EMca",       # Committee averaging
-    "EMwmean"     # Weighted mean by evaluation score
-  ),
-  metric.select = c("TSS"),         # Selection metric
-  metric.select.thresh = c(0.8),    # Minimum TSS threshold
-  metric.select.dataset = "validation",  # Use validation scores
-  metric.eval = c("ROC", "TSS", "FAR", "BIAS", "POD", "POFD", "SR", "BOYCE"),
-  var.import = 10,                  # Variable importance permutations
-  EMci.alpha = 0.05,                # Confidence level for EMci
-  EMwmean.decay = "proportional",   # Weight decay for EMwmean
-  nb.cpu = 10,                      # Number of CPU cores
-  seed.val = 450,                   # Random seed for reproducibility
-  do.progress = TRUE                # Show progress bar
-)
-
-# Save ensemble model object
-saveRDS(biomod_em, paste0(step3_dir, "/Ensemble_model.rds"))
-
-# ------------------------------------------------------------------------------
-# 9.2 Extract and Save Ensemble Evaluation Metrics
-# ------------------------------------------------------------------------------
-# Get evaluation scores for ensemble models
-em_scores <- get_evaluations(biomod_em)
-write.csv(
-  em_scores,
-  paste0(step3_dir, "/EM_scores.csv"),
-  row.names = FALSE
-)
-
-# Get variable importance from ensemble models
-em_vimp_scores <- get_variables_importance(biomod_em)
-write.csv(
-  em_vimp_scores,
-  paste0(step3_dir, "/EM_var_imp.csv"),
-  row.names = FALSE
-)
-
-# ==============================================================================
-# PART 10: SPATIAL PROJECTIONS
-# ==============================================================================
-
-# ------------------------------------------------------------------------------
-# 10.1 Project Individual Models
-# ------------------------------------------------------------------------------
-# Generate spatial predictions for all individual models
-# Projects onto current environmental conditions
-biomod_proj <- BIOMOD_Projection(
-  bm.mod = tuned_model_out,
-  proj.name = "Present_RS",         # Projection name
-  new.env = env_stack_subset,       # Environmental layers for projection
-  models.chosen = "all",            # Project all models
-  metric.binary = "TSS",            # Metric for binary conversion
-  build.clamping.mask = FALSE,      # Don't create clamping mask
-  output.format = ".tif",           # Save as GeoTIFF
-  nb.cpu = 1,                       # Single core (memory intensive)
-  keep.in.memory = FALSE,           # Save to disk
-  do.stack = FALSE,                 # Don't stack all projections
-  seed.val = 450                    # Random seed for reproducibility
-)
-
-# Save projection object
-saveRDS(biomod_proj, paste0(step3_dir, "/Single_models_proj.rds"))
-
-# ------------------------------------------------------------------------------
-# 10.2 Project Ensemble Models
-# ------------------------------------------------------------------------------
-# Generate spatial predictions for ensemble models
-# Projects onto current environmental conditions
-biomod_em_proj <- BIOMOD_EnsembleForecasting(
-  bm.em = biomod_em,
-  proj.name = "EM_Present_RS",      # Projection name
-  new.env = env_stack_subset,       # Environmental layers for projection
-  models.chosen = "all",            # Project all ensemble models
-  metric.binary = "TSS",            # Metric for binary conversion
-  output.format = ".tif",           # Save as GeoTIFF
-  nb.cpu = 5,                       # Parallel processing
-  keep.in.memory = FALSE,           # Save to disk
-  do.stack = FALSE,                 # Don't stack all projections
-  seed.val = 450                    # Random seed for reproducibility
-)
-
-# Save ensemble projection object
-saveRDS(biomod_em_proj, paste0(step3_dir, "/Ensemble_models_proj.rds"))
-
-# ------------------------------------------------------------------------------
-# 10.3 Print Summary
-# ------------------------------------------------------------------------------
-cat("\n=== Step 3 Complete ===\n")
-cat("Initial number of variables (from Step 2):", length(vars_optimized), "\n")
-cat("Number of individual models trained:", nrow(model_scores), "\n")
-cat("Number of ensemble models:", nrow(em_scores), "\n")
-cat("\nModel Performance Summary (TSS):\n")
-print(summary_model_scores |>
-  dplyr::filter(metric.eval == "TSS") |>
-  dplyr::select(algo, sensitivity_mean, specificity_mean, calibration_mean))
-
-# ==============================================================================
-# END OF STEP 3
-# ==============================================================================
-
