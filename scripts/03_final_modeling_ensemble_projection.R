@@ -19,7 +19,6 @@
 #
 # Outputs:
 #   - filtered_occ.csv: Spatially and environmentally filtered occurrences
-#   - spatial_autocorrelation.rds: Spatial autocorrelation metrics
 #   - block_partition.tif: Spatial blocks for cross-validation
 #   - psa_*.csv: Pseudo-absence datasets (11 replicates, 10 for training + 1 for evaluation)
 #   - FoxyBiomodData.rds: Formatted biomod2 input object with eval data
@@ -27,8 +26,12 @@
 #   - Tuned.ModelOut.rds: Final calibrated models with tuned parameters
 #   - Ensemble_model.rds: Ensemble models
 #   - model_scores.csv: Individual model evaluation metrics
+#   - summary_model_scores.csv: Summary statistics of model evaluation metrics
+#   - var_imp.csv: Variable importance scores from individual models
 #   - EM_scores.csv: Ensemble model evaluation metrics
+#   - EM_var_imp.csv: Variable importance from ensemble models
 #   - Single_models_proj.rds: Spatial projections of individual models
+#   - Ensemble_models_proj.rds: Spatial projections of ensemble models
 #
 # ==============================================================================
 

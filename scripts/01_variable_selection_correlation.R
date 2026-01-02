@@ -19,14 +19,7 @@
 #   - Sufficient computational resources (10+ cores recommended)
 #
 # Outputs:
-#   - filtered_occ.csv: Spatially filtered occurrences with block assignments
-#   - spatial_autocorrelation.rds: Spatial autocorrelation metrics
-#   - block_partition.tif: Spatial blocks for cross-validation
-#   - psa_*.csv: Pseudo-absence datasets (10 replicates)
-#   - FoxyBiomodData.rds: Formatted biomod2 input object
-#   - Model_initial.rds: Initial calibrated models
 #   - vars_corr_removed.csv: Variables after correlation filtering
-#   - data_vars_corr_removed.rds: Biomod data with filtered variables
 #
 # ==============================================================================
 
